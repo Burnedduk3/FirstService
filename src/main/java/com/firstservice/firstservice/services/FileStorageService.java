@@ -6,6 +6,8 @@ import com.firstservice.firstservice.models.pojo.JoinerPojo;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.text.PDFTextStripper;
 import org.apache.pdfbox.text.PDFTextStripperByArea;
+import org.apache.poi.xwpf.usermodel.XWPFDocument;
+import org.apache.poi.xwpf.usermodel.XWPFParagraph;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
@@ -14,15 +16,14 @@ import org.springframework.util.StringUtils;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
+import java.util.List;
 import java.util.Optional;
-import java.util.Random;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 @Service
 public class FileStorageService {
@@ -49,6 +50,7 @@ public class FileStorageService {
     public String storeFile(MultipartFile file) {
         // Normalize file name
         String fileName = StringUtils.cleanPath(file.getOriginalFilename());
+        String fileExtension = fileName.split("\\.")[1];
 
         try {
             // Check if the file's name contains invalid characters
@@ -60,10 +62,78 @@ public class FileStorageService {
             Path targetLocation = this.fileStorageLocation.resolve(fileName);
             Files.copy(file.getInputStream(), targetLocation, StandardCopyOption.REPLACE_EXISTING);
 
-            readPdfFile(fileName);
+
+            if(fileExtension.toLowerCase().equals("pdf")){
+                readPdfFile(fileName);
+            }else{
+                readDocxFile(fileName);
+            }
             return fileName;
         } catch (IOException ex) {
             throw new FileStorageException("Could not store file " + fileName + ". Please try again", ex);
+        }
+    }
+
+    private void readDocxFile(String filename){
+        try{
+            File file = new File(fileStorageLocation.resolve(filename).toString());
+            FileInputStream fis = new FileInputStream(file.getAbsolutePath());
+
+            XWPFDocument document = new XWPFDocument(fis);
+
+            List<XWPFParagraph> paragraphs = document.getParagraphs();
+
+            String joinerName = "";
+            int joinerIdentification = -1 ;
+            String joinerRole = "";
+            String joinerLastName = "";
+            String joinerEnglishLevel = "";
+            String joinerDomain = "";
+            String joinerStack = "";
+
+            for (XWPFParagraph para : paragraphs) {
+                Optional<String> titleOptional = Optional.ofNullable(para.getText().split(":")[0]);
+                Optional<String> valueOptional = Optional.ofNullable(para.getText().split(":")[1]);
+                String joinerValue = valueOptional.orElse("");
+                String joinerTitle = titleOptional.orElse("");
+                if(joinerTitle.contains("Cedula")){
+                    joinerIdentification = Integer.parseInt(joinerValue.trim());
+                }
+
+                if (joinerTitle.contains("Nombre")){
+                    joinerName = joinerValue.trim();
+                }
+
+                if(joinerTitle.contains("Apellido")){
+                    joinerLastName = joinerValue.trim();
+                }
+
+                if(joinerTitle.contains("Role")){
+                    joinerRole = joinerValue.trim();
+                }
+
+                if(joinerTitle.contains("Nivel")){
+                    joinerEnglishLevel = joinerValue.trim();
+                }
+
+                if(joinerTitle.contains("Dominio")){
+                    joinerDomain = joinerValue.trim();
+                }
+
+                if(joinerTitle.contains("Stack")){
+                    joinerStack = joinerValue.trim();
+                }
+            }
+            fis.close();
+
+            JoinerPojo joiner = new JoinerPojo(joinerIdentification, joinerName, joinerLastName,joinerStack, joinerRole, joinerEnglishLevel, joinerDomain);
+
+            if(!sendMessageToRabbitMQ(joiner)){
+                throw new Exception();
+            }
+
+        }catch (Exception ex){
+            ex.printStackTrace();
         }
     }
 
@@ -71,8 +141,6 @@ public class FileStorageService {
         try {
 
             PDDocument document = PDDocument.load(new File(fileStorageLocation.resolve(fileName).toString()));
-
-            document.getClass();
 
             PDFTextStripperByArea stripper = new PDFTextStripperByArea();
             stripper.setSortByPosition(true);
@@ -84,7 +152,7 @@ public class FileStorageService {
             String[] lines = pdfFileInText.split("\\n");
 
             String joinerName = "";
-            Integer joinerIdentification = -1 ;
+            int joinerIdentification = -1 ;
             String joinerRole = "";
             String joinerLastName = "";
             String joinerEnglishLevel = "";
